@@ -1,0 +1,38 @@
+## RUN IN R
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+install.packages(c("readxl", "dplyr"))
+
+install.packages(c("readxl", "dplyr"))   # run once
+library(readxl)
+library(dplyr)
+df <- read_excel("raw_data/h251.xlsx")
+# equals
+filtered <- df %>% filter(team == "Lakers")
+
+# multiple conditions
+filtered <- df %>% filter(season == 2024, points > 20)
+
+# text contains
+filtered <- df %>% filter(grepl("playoff", notes, ignore.case = TRUE))
+
+# date range (if date column is proper date)
+filtered <- df %>% filter(game_date >= as.Date("2024-01-01"),
+                          game_date <= as.Date("2024-12-31"))
+View(filtered) 
+ write.csv(filtered, "filtered_data.csv", row.names = FALSE)
+   library(readxl)
+library(dplyr)
+
+df <- read_excel("raw_data/h251.xlsx")
+
+# Example: build regression-ready dataset
+reg_data <- df %>%
+  select(outcome, x1, x2, x3, group_var) %>%   # keep only needed columns
+  filter(!is.na(outcome), !is.na(x1), !is.na(x2), !is.na(x3)) %>%  # remove missing
+  mutate(
+    group_var = as.factor(group_var)           # categorical vars as factors
+  )
+
+# Run regression
+model <- lm(outcome ~ x1 + x2 + x3 + group_var, data = reg_data)
+summary(model)                      
