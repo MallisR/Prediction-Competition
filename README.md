@@ -22,3 +22,5 @@ Predict individual-level healthcare expenditures using MEPS data.
 
 ## Evaluation Metric
 - RMSLE
+## HOW TO DOWNLOAD DATA
+## 
