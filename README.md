@@ -1,4 +1,3 @@
-
 # ECN 372 Prediction Competition
 
 ## Objective
@@ -18,9 +17,10 @@ Predict individual-level healthcare expenditures using MEPS data.
 - Data cleaning: handle missing codes (-1, -7, -8)
 - Feature selection from demographics, health, and insurance
 - Log transformation of target (log(1 + y))
-- Model: TBD
+- Model: compare candidates with cross-validation; document the final choice in the write-up
 
 ## Evaluation Metric
-- RMSLE
+- RMSLE (root mean squared log error)
+
 ## HOW TO DOWNLOAD DATA
-## 
+##

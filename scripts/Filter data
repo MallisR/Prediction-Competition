@@ -1,29 +1,87 @@
-R
-
+## ECN 372 — filter MEPS workbook (run in R)
+## From project root:  Rscript "scripts/Filter data"
+## In RStudio:        setwd to project root, then source("scripts/Filter data", encoding = "UTF-8")
 
 options(repos = c(CRAN = "https://cloud.r-project.org"))
-install.packages(c("readxl", "dplyr"))   # run once
-library(readxl)
-library(dplyr)
+for (pkg in c("readxl", "dplyr")) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+}
+suppressPackageStartupMessages({
+  library(readxl)
+  library(dplyr)
+})
 
-# Load file
-df <- read_excel("raw_data/h251.xlsx")
+# Input: same layout as teammates — MEPS extract under raw_data/h251.xlsx
+# (Falls back to RawPredictionData.xlsx in repo root if you keep a local copy there.)
+resolve_data_paths <- function() {
+  for (root in c(".", "..")) {
+    coworker_xlsx <- file.path(root, "raw_data", "h251.xlsx")
+    if (file.exists(coworker_xlsx)) {
+      return(list(
+        repo_root = normalizePath(root, winslash = "/", mustWork = TRUE),
+        input_path = normalizePath(coworker_xlsx, winslash = "/", mustWork = TRUE)
+      ))
+    }
+    local_alias <- file.path(root, "RawPredictionData.xlsx")
+    if (file.exists(local_alias)) {
+      return(list(
+        repo_root = normalizePath(root, winslash = "/", mustWork = TRUE),
+        input_path = normalizePath(local_alias, winslash = "/", mustWork = TRUE)
+      ))
+    }
+  }
+  NULL
+}
 
-# Check column names first
-names(df)
+paths <- resolve_data_paths()
+if (is.null(paths)) {
+  stop(
+    "Cannot find input workbook. Expected one of:\n",
+    "  raw_data/h251.xlsx   (team default)\n",
+    "  RawPredictionData.xlsx (repo root)\n",
+    "Run from the repository root or from scripts/ (one level down)."
+  )
+}
 
-# Build regression-ready filtered data (replace with your real column names)
-reg_data <- df %>%
-  select(y, x1, x2, category) %>%                  # keep only model columns
-  filter(!is.na(y), !is.na(x1), !is.na(x2)) %>%   # drop rows with missing model values
-  mutate(category = as.factor(category))           # categorical predictor
+repo_root <- paths$repo_root
+input_path <- paths$input_path
+output_path <- file.path(repo_root, "filtered_data.csv")
 
-# Run regression
-model <- lm(y ~ x1 + x2 + category, data = reg_data)
-summary(model)
+message("Reading: ", input_path)
+df <- read_excel(input_path)
 
+# Survey weights / PSU / stratum — excluded per competition brief
+weight_cols <- grep(
+  "^(PERWT|FAMWT|SAQWT|VARSTR|VARPSU)",
+  names(df),
+  value = TRUE,
+  ignore.case = TRUE
+)
+if (length(weight_cols)) {
+  df <- df %>% select(-any_of(weight_cols))
+}
 
+totexp_cols <- grep("^TOTEXP", names(df), value = TRUE)
+if (!length(totexp_cols)) {
+  stop("No TOTEXP* column found; check column names in the input workbook.")
+}
+target_col <- totexp_cols[[length(totexp_cols)]]
 
+meps_missing <- c(-1L, -7L, -8L, -9L)
 
+df <- df %>%
+  mutate(across(all_of(target_col), ~ suppressWarnings(as.numeric(.))))
 
-write.csv(reg_data, "filtered_data.csv", row.names = FALSE)
+filtered <- df %>%
+  filter(
+    !is.na(.data[[target_col]]),
+    !.data[[target_col]] %in% meps_missing,
+    .data[[target_col]] >= 0
+  )
+
+message("Rows: ", nrow(df), " -> ", nrow(filtered), " | Target: ", target_col)
+message("Writing: ", output_path)
+
+write.csv(filtered, output_path, row.names = FALSE)
