@@ -2,3 +2,6 @@ raw_data/
 *.csv
 *.dta
 data/raw/
+
+# Local-only MEPS extract (teammates use raw_data/h251.xlsx)
+RawPredictionData.xlsx
