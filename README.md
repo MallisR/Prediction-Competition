@@ -196,7 +196,28 @@ Both files contain:
 
 ---
 
-## 5) Quick Command Reference
+## 5) Why We Chose the Final Model
+
+We picked the final model based on the lowest validation RMSLE.
+
+- `TOTEXP` has many zeros and a long right tail, so a two-part model fits the data better than one single regression.
+- We selected the model (or blend) that performed best on the holdout set, not just on training data.
+- We only use ensemble weights when they improve validation RMSLE.
+
+`R/06_predict.R` uses the best model from `two_three_part_metrics.csv` and uses `ensemble_weights.csv` when it helps.
+
+---
+
+## 6) What We Learned from Comparing Models
+
+- Two-part models were more reliable than single models because they handled zero spenders and positive spenders separately.
+- Tree-based models (LightGBM/XGBoost) captured nonlinear patterns better than simpler baselines.
+- Ensembles helped when strong models made different errors; when models were too similar, gains were small.
+- Validation performance was a better guide than training performance for final selection.
+
+---
+
+## 7) Quick Command Reference
 
 - `make help`
 - `make eda`
@@ -210,7 +231,7 @@ Both files contain:
 
 ---
 
-## 6) Suggested End-to-End Run Order
+## 8) Suggested End-to-End Run Order
 
 For a complete run from clean data to submission files:
 
