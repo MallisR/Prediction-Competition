@@ -2,7 +2,19 @@ set.seed(42)
 source("R/utils.R")
 
 options(repos = c(CRAN = "https://cloud.r-project.org"))
-required_pkgs <- c("dplyr", "readr", "xgboost")
+args <- commandArgs(trailingOnly = TRUE)
+run_mode <- if (length(args) >= 1L) args[[1]] else "all"
+valid_modes <- c("all", "xgboost_only", "lightgbm_only")
+if (!run_mode %in% valid_modes) {
+  stop("Invalid mode `", run_mode, "`. Use one of: ", paste(valid_modes, collapse = ", "))
+}
+run_xgb <- run_mode %in% c("all", "xgboost_only")
+run_lgb <- run_mode %in% c("all", "lightgbm_only")
+
+required_pkgs <- c("dplyr", "readr")
+if (run_xgb) {
+  required_pkgs <- c(required_pkgs, "xgboost")
+}
 missing_pkgs <- required_pkgs[!vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)]
 if (length(missing_pkgs)) {
   stop(
@@ -17,7 +29,9 @@ if (length(missing_pkgs)) {
 suppressPackageStartupMessages({
   library(dplyr)
   library(readr)
-  library(xgboost)
+  if (run_xgb) {
+    library(xgboost)
+  }
 })
 
 train_path <- "outputs/predictions/train_features.csv"
@@ -71,40 +85,46 @@ make_xy <- function(df, cols) {
 x_train <- make_xy(train_df, feature_cols)
 x_test <- make_xy(test_df, feature_cols)
 y_test <- test_df[[target_col]]
+pos_idx <- which(train_df[[target_col]] > 0)
 
 # -----------------------------
 # Two-part model (XGBoost)
 # -----------------------------
-part1_xgb <- xgboost::xgboost(
-  data = x_train,
-  label = train_df$ANY_SPEND,
-  objective = "binary:logistic",
-  nrounds = 300,
-  max_depth = 6,
-  eta = 0.05,
-  subsample = 0.8,
-  colsample_bytree = 0.8,
-  verbose = 0
-)
+rmsle_twopart_xgb <- NA_real_
+y_pred_twopart_xgb <- rep(NA_real_, nrow(test_df))
 
-pos_idx <- which(train_df[[target_col]] > 0)
-part2_xgb <- xgboost::xgboost(
-  data = x_train[pos_idx, , drop = FALSE],
-  label = train_df$log1p_TOTEXP[pos_idx],
-  objective = "reg:squarederror",
-  nrounds = 350,
-  max_depth = 6,
-  eta = 0.05,
-  subsample = 0.8,
-  colsample_bytree = 0.8,
-  verbose = 0
-)
+if (run_xgb) {
+  message("Running two-part XGBoost...")
+  part1_xgb <- xgboost::xgboost(
+    data = x_train,
+    label = train_df$ANY_SPEND,
+    objective = "binary:logistic",
+    nrounds = 300,
+    max_depth = 6,
+    eta = 0.05,
+    subsample = 0.8,
+    colsample_bytree = 0.8,
+    verbose = 0
+  )
 
-p_spend_xgb <- as.numeric(predict(part1_xgb, x_test))
-log_pred_xgb <- as.numeric(predict(part2_xgb, x_test))
-y_pred_twopart_xgb <- p_spend_xgb * expm1(log_pred_xgb)
-y_pred_twopart_xgb <- pmax(y_pred_twopart_xgb, 0)
-rmsle_twopart_xgb <- rmsle(y_test, y_pred_twopart_xgb)
+  part2_xgb <- xgboost::xgboost(
+    data = x_train[pos_idx, , drop = FALSE],
+    label = train_df$log1p_TOTEXP[pos_idx],
+    objective = "reg:squarederror",
+    nrounds = 350,
+    max_depth = 6,
+    eta = 0.05,
+    subsample = 0.8,
+    colsample_bytree = 0.8,
+    verbose = 0
+  )
+
+  p_spend_xgb <- as.numeric(predict(part1_xgb, x_test))
+  log_pred_xgb <- as.numeric(predict(part2_xgb, x_test))
+  y_pred_twopart_xgb <- p_spend_xgb * expm1(log_pred_xgb)
+  y_pred_twopart_xgb <- pmax(y_pred_twopart_xgb, 0)
+  rmsle_twopart_xgb <- rmsle(y_test, y_pred_twopart_xgb)
+}
 
 # -----------------------------
 # Two-part model (LightGBM)
@@ -113,7 +133,8 @@ lightgbm_available <- requireNamespace("lightgbm", quietly = TRUE)
 rmsle_twopart_lgb <- NA_real_
 y_pred_twopart_lgb <- rep(NA_real_, nrow(test_df))
 
-if (lightgbm_available) {
+if (run_lgb && lightgbm_available) {
+  message("Running two-part LightGBM...")
   lgb_train_cls <- lightgbm::lgb.Dataset(data = x_train, label = train_df$ANY_SPEND)
   part1_lgb <- lightgbm::lgb.train(
     params = list(
@@ -152,75 +173,85 @@ if (lightgbm_available) {
   y_pred_twopart_lgb <- p_spend_lgb * expm1(log_pred_lgb)
   y_pred_twopart_lgb <- pmax(y_pred_twopart_lgb, 0)
   rmsle_twopart_lgb <- rmsle(y_test, y_pred_twopart_lgb)
-} else {
+} else if (run_lgb && !lightgbm_available) {
   message("Package `lightgbm` not installed; skipping two-part LightGBM fit.")
+} else {
+  message("Skipping LightGBM due to mode: ", run_mode)
 }
 
 # -----------------------------
 # Three-part model (XGBoost)
 # -----------------------------
-part1_three_xgb <- xgboost::xgboost(
-  data = x_train,
-  label = train_df$ANY_SPEND,
-  objective = "binary:logistic",
-  nrounds = 300,
-  max_depth = 6,
-  eta = 0.05,
-  subsample = 0.8,
-  colsample_bytree = 0.8,
-  verbose = 0
-)
+rmsle_threepart_xgb <- NA_real_
+y_pred_threepart_xgb <- rep(NA_real_, nrow(test_df))
 
-nonzero_idx <- which(train_df$ANY_SPEND == 1L & !is.na(train_df$SPEND_TIER))
-nonzero_binary <- as.integer(train_df$SPEND_TIER[nonzero_idx] == "2")
+if (run_xgb) {
+  message("Running three-part XGBoost...")
+  part1_three_xgb <- xgboost::xgboost(
+    data = x_train,
+    label = train_df$ANY_SPEND,
+    objective = "binary:logistic",
+    nrounds = 300,
+    max_depth = 6,
+    eta = 0.05,
+    subsample = 0.8,
+    colsample_bytree = 0.8,
+    verbose = 0
+  )
 
-part2_three_xgb <- xgboost::xgboost(
-  data = x_train[nonzero_idx, , drop = FALSE],
-  label = nonzero_binary,
-  objective = "binary:logistic",
-  nrounds = 250,
-  max_depth = 5,
-  eta = 0.05,
-  subsample = 0.8,
-  colsample_bytree = 0.8,
-  verbose = 0
-)
+  nonzero_idx <- which(train_df$ANY_SPEND == 1L & !is.na(train_df$SPEND_TIER))
+  nonzero_binary <- as.integer(train_df$SPEND_TIER[nonzero_idx] == "2")
 
-low_idx <- which(train_df$SPEND_TIER == "1")
-high_idx <- which(train_df$SPEND_TIER == "2")
+  part2_three_xgb <- xgboost::xgboost(
+    data = x_train[nonzero_idx, , drop = FALSE],
+    label = nonzero_binary,
+    objective = "binary:logistic",
+    nrounds = 250,
+    max_depth = 5,
+    eta = 0.05,
+    subsample = 0.8,
+    colsample_bytree = 0.8,
+    verbose = 0
+  )
 
-part3_low_xgb <- xgboost::xgboost(
-  data = x_train[low_idx, , drop = FALSE],
-  label = train_df$log1p_TOTEXP[low_idx],
-  objective = "reg:squarederror",
-  nrounds = 300,
-  max_depth = 5,
-  eta = 0.05,
-  subsample = 0.8,
-  colsample_bytree = 0.8,
-  verbose = 0
-)
+  low_idx <- which(train_df$SPEND_TIER == "1")
+  high_idx <- which(train_df$SPEND_TIER == "2")
 
-part3_high_xgb <- xgboost::xgboost(
-  data = x_train[high_idx, , drop = FALSE],
-  label = train_df$log1p_TOTEXP[high_idx],
-  objective = "reg:squarederror",
-  nrounds = 350,
-  max_depth = 6,
-  eta = 0.05,
-  subsample = 0.8,
-  colsample_bytree = 0.8,
-  verbose = 0
-)
+  part3_low_xgb <- xgboost::xgboost(
+    data = x_train[low_idx, , drop = FALSE],
+    label = train_df$log1p_TOTEXP[low_idx],
+    objective = "reg:squarederror",
+    nrounds = 300,
+    max_depth = 5,
+    eta = 0.05,
+    subsample = 0.8,
+    colsample_bytree = 0.8,
+    verbose = 0
+  )
 
-p_any <- as.numeric(predict(part1_three_xgb, x_test))
-p_high <- as.numeric(predict(part2_three_xgb, x_test))
-pred_low <- expm1(as.numeric(predict(part3_low_xgb, x_test)))
-pred_high <- expm1(as.numeric(predict(part3_high_xgb, x_test)))
+  part3_high_xgb <- xgboost::xgboost(
+    data = x_train[high_idx, , drop = FALSE],
+    label = train_df$log1p_TOTEXP[high_idx],
+    objective = "reg:squarederror",
+    nrounds = 350,
+    max_depth = 6,
+    eta = 0.05,
+    subsample = 0.8,
+    colsample_bytree = 0.8,
+    verbose = 0
+  )
 
-y_pred_threepart_xgb <- p_any * (p_high * pred_high + (1 - p_high) * pred_low)
-y_pred_threepart_xgb <- pmax(y_pred_threepart_xgb, 0)
-rmsle_threepart_xgb <- rmsle(y_test, y_pred_threepart_xgb)
+  p_any <- as.numeric(predict(part1_three_xgb, x_test))
+  p_high <- as.numeric(predict(part2_three_xgb, x_test))
+  pred_low <- expm1(as.numeric(predict(part3_low_xgb, x_test)))
+  pred_high <- expm1(as.numeric(predict(part3_high_xgb, x_test)))
+
+  y_pred_threepart_xgb <- p_any * (p_high * pred_high + (1 - p_high) * pred_low)
+  y_pred_threepart_xgb <- pmax(y_pred_threepart_xgb, 0)
+  rmsle_threepart_xgb <- rmsle(y_test, y_pred_threepart_xgb)
+} else {
+  message("Skipping all XGBoost fits due to mode: ", run_mode)
+}
 
 metrics <- dplyr::tibble(
   model = c("two_part_xgboost", "two_part_lightgbm", "three_part_xgboost"),
@@ -239,5 +270,6 @@ readr::write_csv(predictions, "outputs/predictions/two_three_part_test_predictio
 
 cat("\nTwo-part / Three-part RMSLE:\n")
 print(metrics, n = nrow(metrics), width = Inf)
+cat("\nRun mode:", run_mode, "\n")
 cat("\nSaved: outputs/models/two_three_part_metrics.csv\n")
 cat("Saved: outputs/predictions/two_three_part_test_predictions.csv\n")
