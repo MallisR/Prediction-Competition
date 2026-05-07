@@ -4,6 +4,13 @@
 
 options(repos = c(CRAN = "https://cloud.r-project.org"))
 
+required_pkgs <- c("ggplot2", "dplyr", "stringr", "tibble", "tidyr", "scales")
+for (pkg in required_pkgs) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+}
+
 resolve_repo_root <- function() {
   for (root in c(".", "..")) {
     p <- file.path(root, "filtered_data.csv")
@@ -45,7 +52,9 @@ meps_to_na <- function(x) {
 repo_root <- resolve_repo_root()
 csv_path <- file.path(repo_root, "filtered_data.csv")
 fig_dir <- file.path(repo_root, "figures")
+output_fig_dir <- file.path(repo_root, "outputs", "figures")
 dir.create(fig_dir, showWarnings = FALSE)
+dir.create(output_fig_dir, recursive = TRUE, showWarnings = FALSE)
 
 message("Reading: ", csv_path)
 df <- read.csv(csv_path, check.names = FALSE)
@@ -79,6 +88,178 @@ message("Wrote: ", audit_path)
 
 y <- meps_to_na(df[[target_col]])
 logy <- log1p(y)
+
+plot_df <- df
+plot_df$TOTEXP_raw <- pmax(ifelse(is.na(y), 0, y), 0)
+plot_df$log1p_TOTEXP <- log1p(plot_df$TOTEXP_raw)
+
+year_candidates <- names(plot_df)[stringr::str_detect(names(plot_df), "^(YEAR|PANEL|FYR|PERWT\\d{2}F?)$")]
+if (!length(year_candidates)) {
+  year_candidates <- names(plot_df)[stringr::str_detect(names(plot_df), "YEAR|PANEL|FYR")]
+}
+year_col <- if (length(year_candidates)) year_candidates[[1]] else NA_character_
+
+age_candidates <- names(plot_df)[stringr::str_detect(names(plot_df), regex("^AGE|AGELAST|AGE\\d{2}", ignore_case = TRUE))]
+age_col <- if (length(age_candidates)) age_candidates[[1]] else NA_character_
+
+health_candidates <- names(plot_df)[
+  stringr::str_detect(names(plot_df), regex("RTHLTH|HEALTH|HLTH", ignore_case = TRUE))
+]
+health_col <- if (length(health_candidates)) health_candidates[[1]] else NA_character_
+
+save_plot <- function(p, filename, width = 10, height = 6) {
+  ggplot2::ggsave(
+    filename = file.path(output_fig_dir, filename),
+    plot = p,
+    width = width,
+    height = height,
+    dpi = 300
+  )
+}
+
+# 1) Histogram of raw TOTEXP with log10 x-axis
+p_hist_raw_log10 <- ggplot2::ggplot(
+  plot_df %>% dplyr::filter(.data$TOTEXP_raw > 0),
+  ggplot2::aes(x = .data$TOTEXP_raw)
+) +
+  ggplot2::geom_histogram(bins = 80, fill = "steelblue", alpha = 0.85) +
+  ggplot2::scale_x_log10() +
+  ggplot2::labs(
+    title = "Histogram of raw TOTEXP (log10 x-axis)",
+    x = "TOTEXP (log10 scale)",
+    y = "Count"
+  ) +
+  ggplot2::theme_minimal()
+save_plot(p_hist_raw_log10, "hist_totexp_raw_log10.png")
+
+# 2) Histogram of log1p(TOTEXP)
+p_hist_log1p <- ggplot2::ggplot(plot_df, ggplot2::aes(x = .data$log1p_TOTEXP)) +
+  ggplot2::geom_histogram(bins = 80, fill = "darkorange", alpha = 0.85) +
+  ggplot2::labs(
+    title = "Histogram of log1p(TOTEXP)",
+    x = "log1p(TOTEXP)",
+    y = "Count"
+  ) +
+  ggplot2::theme_minimal()
+save_plot(p_hist_log1p, "hist_totexp_log1p.png")
+
+# 3) Bar chart: proportion of zero spenders by year
+if (!is.na(year_col) && year_col %in% names(plot_df)) {
+  zero_by_year <- plot_df %>%
+    dplyr::mutate(
+      year = as.factor(.data[[year_col]]),
+      zero_spend = .data$TOTEXP_raw == 0
+    ) %>%
+    dplyr::group_by(.data$year) %>%
+    dplyr::summarise(prop_zero = mean(.data$zero_spend, na.rm = TRUE), .groups = "drop")
+
+  p_zero_by_year <- ggplot2::ggplot(zero_by_year, ggplot2::aes(x = .data$year, y = .data$prop_zero)) +
+    ggplot2::geom_col(fill = "firebrick", alpha = 0.9) +
+    ggplot2::scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+    ggplot2::labs(
+      title = "Proportion of zero spenders by year",
+      x = year_col,
+      y = "Proportion with TOTEXP = 0"
+    ) +
+    ggplot2::theme_minimal()
+  save_plot(p_zero_by_year, "bar_zero_spenders_by_year.png")
+}
+
+# 4) Line plot: mean and median TOTEXP by 10-year age group
+if (!is.na(age_col) && age_col %in% names(plot_df)) {
+  age_summary <- plot_df %>%
+    dplyr::mutate(
+      age_num = meps_to_na(.data[[age_col]]),
+      age_bin = floor(.data$age_num / 10) * 10,
+      age_group = paste0(.data$age_bin, "-", .data$age_bin + 9)
+    ) %>%
+    dplyr::filter(!is.na(.data$age_num), .data$age_num >= 0, .data$age_num <= 100) %>%
+    dplyr::group_by(.data$age_bin, .data$age_group) %>%
+    dplyr::summarise(
+      mean_totexp = mean(.data$TOTEXP_raw, na.rm = TRUE),
+      median_totexp = stats::median(.data$TOTEXP_raw, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(.data$age_bin)
+
+  age_long <- age_summary %>%
+    dplyr::select(.data$age_group, .data$mean_totexp, .data$median_totexp) %>%
+    tidyr::pivot_longer(
+      cols = c(.data$mean_totexp, .data$median_totexp),
+      names_to = "stat",
+      values_to = "totexp"
+    )
+
+  p_age_line <- ggplot2::ggplot(age_long, ggplot2::aes(x = .data$age_group, y = .data$totexp, color = .data$stat, group = .data$stat)) +
+    ggplot2::geom_line(linewidth = 1.1) +
+    ggplot2::geom_point(size = 2) +
+    ggplot2::labs(
+      title = "Mean and median TOTEXP by 10-year age group",
+      x = "Age group",
+      y = "TOTEXP",
+      color = "Statistic"
+    ) +
+    ggplot2::theme_minimal() +
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1))
+  save_plot(p_age_line, "line_mean_median_totexp_by_age_group.png")
+}
+
+# 5) Boxplot: TOTEXP by self-reported health status (if present)
+if (!is.na(health_col) && health_col %in% names(plot_df)) {
+  health_df <- plot_df %>%
+    dplyr::mutate(health = as.factor(.data[[health_col]])) %>%
+    dplyr::filter(!is.na(.data$health))
+
+  if (nrow(health_df) > 0) {
+    p_health_box <- ggplot2::ggplot(health_df, ggplot2::aes(x = .data$health, y = .data$TOTEXP_raw)) +
+      ggplot2::geom_boxplot(outlier.alpha = 0.15, fill = "mediumpurple", alpha = 0.8) +
+      ggplot2::scale_y_log10() +
+      ggplot2::labs(
+        title = "TOTEXP by self-reported health status",
+        x = health_col,
+        y = "TOTEXP (log10 scale)"
+      ) +
+      ggplot2::theme_minimal() +
+      ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 35, hjust = 1))
+    save_plot(p_health_box, "box_totexp_by_health_status.png")
+  }
+}
+
+# 6) Correlation plot of top 20 numeric features vs log1p(TOTEXP)
+numeric_df <- plot_df %>%
+  dplyr::select(where(is.numeric))
+numeric_df$log1p_TOTEXP <- plot_df$log1p_TOTEXP
+
+num_predictors <- setdiff(names(numeric_df), c("TOTEXP_raw", "log1p_TOTEXP"))
+if (length(num_predictors)) {
+  corr_scores <- vapply(
+    num_predictors,
+    function(col) abs(stats::cor(numeric_df[[col]], numeric_df$log1p_TOTEXP, use = "pairwise.complete.obs")),
+    numeric(1)
+  )
+  top20 <- names(sort(corr_scores, decreasing = TRUE))[seq_len(min(20, length(corr_scores)))]
+  corr_vars <- c(top20, "log1p_TOTEXP")
+  corr_mat <- stats::cor(numeric_df[, corr_vars, drop = FALSE], use = "pairwise.complete.obs")
+
+  corr_path <- file.path(output_fig_dir, "corr_top20_vs_log1p_totexp.png")
+  if (requireNamespace("ggcorrplot", quietly = TRUE)) {
+    corr_plot <- ggcorrplot::ggcorrplot(
+      corr_mat,
+      hc.order = TRUE,
+      type = "lower",
+      lab = FALSE
+    ) +
+      ggplot2::ggtitle("Correlation matrix: top 20 numeric features + log1p(TOTEXP)")
+    ggplot2::ggsave(filename = corr_path, plot = corr_plot, width = 10, height = 8, dpi = 300)
+  } else if (requireNamespace("corrplot", quietly = TRUE)) {
+    grDevices::png(filename = corr_path, width = 1200, height = 1000, res = 150)
+    corrplot::corrplot(corr_mat, method = "color", type = "lower", tl.cex = 0.7)
+    graphics::title("Correlation matrix: top 20 numeric features + log1p(TOTEXP)")
+    grDevices::dev.off()
+  }
+}
+
+message("Saved requested figures in: ", output_fig_dir)
 
 pdf_path <- file.path(fig_dir, "eda_target.pdf")
 pdf(pdf_path, width = 10, height = 8)
