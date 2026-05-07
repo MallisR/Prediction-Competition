@@ -217,7 +217,15 @@ We picked the final model based on the lowest validation RMSLE.
 
 ---
 
-## 7) Quick Command Reference
+## 7) AI Usage
+
+AI tools were used to speed up coding, documentation, and iteration during this project.
+
+Documentation can be found in AI_USAGE.md
+
+---
+
+## 8) Quick Command Reference
 
 - `make help`
 - `make eda`
@@ -231,7 +239,7 @@ We picked the final model based on the lowest validation RMSLE.
 
 ---
 
-## 8) Suggested End-to-End Run Order
+## 9) Suggested End-to-End Run Order
 
 For a complete run from clean data to submission files:
 
