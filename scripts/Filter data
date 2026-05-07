@@ -85,6 +85,20 @@ if (!length(totexp_cols)) {
 }
 target_col <- totexp_cols[[length(totexp_cols)]]
 
+meps_forbidden_predictor_names <- function(nm) {
+  # Section 2.5.11: utilization/expenditure/charge/source-of-payment variables.
+  spend_util <- nm[grepl(
+    "^[A-Z]{2,12}(EXP|TCH|SLF|MCR|MCD|PRV|VA|TRI|OFD|STL|WCP|OPR|OPU|OSR)[0-9]{2}$",
+    nm
+  )]
+  util_counts <- nm[grepl(
+    "^(TOTTCH|TOTEXP|TOTSLF|TOTMCR|TOTMCD|TOTPRV|TOTVA|TOTTRI|TOTOFD|TOTSTL|TOTWCP|TOTOPR|TOTOPU|TOTOSR|OBTOTV|OBDRV|OBOTHV|OBCHIR|OBNURS|OBOPTO|OBASST|OBTHER|OBVTCH|OPTOTV|OPDRV|OPOTHV|AMCHIR|AMNURS|AMOPT|AMASST|AMTHER|OPFTCH|OPDTCH|OPVTCH|ERTOT|ERFTCH|ERDTCH|ERVTCH|IPDIS|IPNGTD|IPZERO|IPFTCH|IPDTCH|DVTOT|DVGEN|DVORTH|DVVTCH|HHTOTD|HHAGD|HHINDD|HHINFD|HHATCH|HHNTCH|OMETCH|RXTOT)[0-9]{2}$",
+    nm
+  )]
+  forbidden <- sort(unique(c(spend_util, util_counts)))
+  setdiff(forbidden, target_col)
+}
+
 meps_missing <- c(-1L, -7L, -8L, -9L)
 
 df <- df %>%
@@ -96,6 +110,11 @@ filtered <- df %>%
     !.data[[target_col]] %in% meps_missing,
     .data[[target_col]] >= 0
   )
+
+forbidden_predictors <- meps_forbidden_predictor_names(names(filtered))
+if (length(forbidden_predictors)) {
+  filtered <- filtered %>% select(-any_of(forbidden_predictors))
+}
 
 predictor_cols <- setdiff(names(filtered), target_col)
 model_ready <- filtered
@@ -153,6 +172,7 @@ for (nm in predictor_cols) {
 }
 
 message("Rows: ", nrow(df), " -> ", nrow(filtered), " | Target: ", target_col)
+message("Dropped forbidden predictors: ", length(forbidden_predictors))
 message("Predictors with NA after recode: ", length(cols_with_missing))
 message("Added missingness flags: ", length(cols_with_missing))
 message("Writing (filtered): ", output_path)
