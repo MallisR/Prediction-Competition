@@ -22,5 +22,23 @@ Predict individual-level healthcare expenditures using MEPS data.
 ## Evaluation Metric
 - RMSLE (root mean squared log error)
 
-## HOW TO DOWNLOAD DATA
-##
+## Reproducible Team Workflow
+- Place the raw MEPS workbook at `raw_data/h251.xlsx` (team-standard path).
+- From repo root, run:
+  - `Rscript scripts/run_pipeline.R`
+
+This runs the full pipeline in a fixed order:
+1. `scripts/Filter data`
+2. `scripts/explore_data.R`
+3. `scripts/run_cv_tidymodels.R`
+
+Expected outputs:
+- `filtered_data.csv`
+- `filtered_model_ready.csv`
+- `figures/column_audit.tsv`
+- `figures/eda_target.pdf`
+- `outputs/cv_results.csv`
+
+## Notes
+- RMSLE scoring clips negative predictions to zero before computing `log1p` error.
+- CV script uses 5-fold CV stratified by `SPEND_TIER`.
