@@ -21,14 +21,24 @@ resolve_data_paths <- function() {
     if (file.exists(coworker_xlsx)) {
       return(list(
         repo_root = normalizePath(root, winslash = "/", mustWork = TRUE),
-        input_path = normalizePath(coworker_xlsx, winslash = "/", mustWork = TRUE)
+        input_path = normalizePath(coworker_xlsx, winslash = "/", mustWork = TRUE),
+        input_kind = "xlsx"
       ))
     }
     local_alias <- file.path(root, "RawPredictionData.xlsx")
     if (file.exists(local_alias)) {
       return(list(
         repo_root = normalizePath(root, winslash = "/", mustWork = TRUE),
-        input_path = normalizePath(local_alias, winslash = "/", mustWork = TRUE)
+        input_path = normalizePath(local_alias, winslash = "/", mustWork = TRUE),
+        input_kind = "xlsx"
+      ))
+    }
+    existing_filtered <- file.path(root, "filtered_data.csv")
+    if (file.exists(existing_filtered)) {
+      return(list(
+        repo_root = normalizePath(root, winslash = "/", mustWork = TRUE),
+        input_path = normalizePath(existing_filtered, winslash = "/", mustWork = TRUE),
+        input_kind = "csv"
       ))
     }
   }
@@ -41,6 +51,7 @@ if (is.null(paths)) {
     "Cannot find input workbook. Expected one of:\n",
     "  raw_data/h251.xlsx   (team default)\n",
     "  RawPredictionData.xlsx (repo root)\n",
+    "  filtered_data.csv (already filtered)\n",
     "Run from the repository root or from scripts/ (one level down)."
   )
 }
@@ -48,9 +59,14 @@ if (is.null(paths)) {
 repo_root <- paths$repo_root
 input_path <- paths$input_path
 output_path <- file.path(repo_root, "filtered_data.csv")
+model_ready_output_path <- file.path(repo_root, "filtered_model_ready.csv")
 
 message("Reading: ", input_path)
-df <- read_excel(input_path)
+if (identical(paths$input_kind, "xlsx")) {
+  df <- read_excel(input_path)
+} else {
+  df <- read.csv(input_path, check.names = FALSE)
+}
 
 # Survey weights / PSU / stratum — excluded per competition brief
 weight_cols <- grep(
@@ -81,7 +97,66 @@ filtered <- df %>%
     .data[[target_col]] >= 0
   )
 
+predictor_cols <- setdiff(names(filtered), target_col)
+model_ready <- filtered
+
+to_numeric_with_reserved_na <- function(x) {
+  out <- suppressWarnings(as.numeric(x))
+  out[out %in% meps_missing] <- NA_real_
+  out
+}
+
+mode_impute <- function(x) {
+  x2 <- x[!is.na(x)]
+  if (!length(x2)) {
+    return("missing")
+  }
+  tb <- sort(table(x2), decreasing = TRUE)
+  names(tb)[1]
+}
+
+# Recode reserved MEPS missing codes to NA for predictors.
+for (nm in predictor_cols) {
+  model_ready[[nm]] <- to_numeric_with_reserved_na(model_ready[[nm]])
+}
+
+reserved_missing_counts <- vapply(
+  predictor_cols,
+  function(nm) sum(is.na(model_ready[[nm]])),
+  integer(1)
+)
+cols_with_missing <- predictor_cols[reserved_missing_counts > 0]
+
+# Add a missingness indicator for every predictor that has at least one NA.
+for (nm in cols_with_missing) {
+  indicator_name <- paste0(nm, "_MISS")
+  model_ready[[indicator_name]] <- as.integer(is.na(model_ready[[nm]]))
+}
+
+# Median impute numeric predictors so models do not ingest NA as-is.
+for (nm in predictor_cols) {
+  x <- model_ready[[nm]]
+  if (is.numeric(x)) {
+    if (all(is.na(x))) {
+      model_ready[[nm]] <- 0
+    } else {
+      med <- stats::median(x, na.rm = TRUE)
+      x[is.na(x)] <- med
+      model_ready[[nm]] <- x
+    }
+  } else {
+    x <- as.character(x)
+    m <- mode_impute(x)
+    x[is.na(x)] <- m
+    model_ready[[nm]] <- x
+  }
+}
+
 message("Rows: ", nrow(df), " -> ", nrow(filtered), " | Target: ", target_col)
-message("Writing: ", output_path)
+message("Predictors with NA after recode: ", length(cols_with_missing))
+message("Added missingness flags: ", length(cols_with_missing))
+message("Writing (filtered): ", output_path)
+message("Writing (model-ready): ", model_ready_output_path)
 
 write.csv(filtered, output_path, row.names = FALSE)
+write.csv(model_ready, model_ready_output_path, row.names = FALSE)
